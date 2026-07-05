@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Deskhand — The front desk that never goes home</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body style="margin:0;">
+<div id="root"></div>
+<script type="text/plain" id="component-source">
+const { useState, useMemo } = React;
+
+/* Front Desk Agent — v2
+   Simulates an always-on AI agent for local service businesses.
+   Real parts: AI drafting, weekly-brief generation, all computed from live/demo state.
+   Simulated parts (clearly labeled): sending SMS, posting review replies, calendar sync —
+   these need the business's real phone/review/calendar accounts to go live. */
+
+const seedBusiness = { name: "Ridgeline Dental", type: "dental clinic", voice: "warm, brief, professional" };
+const OPERATOR_EMAIL = "arishtennis@gmail.com";
+const AGENT_NAME = "Deskhand";
+const SLOGAN = "The front desk that never goes home.";
+
+const seedClients = [
+  { id: "c1", name: "Ridgeline Dental", type: "Dental clinic", signals: 3, handled: 1, weekly: true, plan: "Pro" },
+  { id: "c2", name: "Marlow & Co. Salon", type: "Hair salon", signals: 7, handled: 6, weekly: true, plan: "Starter" },
+  { id: "c3", name: "Union Street Auto", type: "Repair shop", signals: 2, handled: 2, weekly: false, plan: "Starter" },
+];
+
+function Logo({ size = 28 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 40 40" fill="none">
+      <rect x="1" y="1" width="38" height="38" rx="10" stroke="#B8935F" strokeWidth="1.4" />
+      <path d="M12 27V13h6.2c4 0 6.6 2.6 6.6 7s-2.6 7-6.6 7H12z" stroke="#F6F2E8" strokeWidth="1.6" strokeLinejoin="round" fill="none" />
+      <circle cx="28" cy="12" r="2" fill="#7FBF8E" />
+    </svg>
+  );
+}
+
+// Demo mode: no API key, no network call. This simulates the agent
+// "thinking" and returns a realistic, context-aware draft built from
+// the same business/customer details a live version would use.
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function wait(ms) { return new Promise((res) => setTimeout(res, ms)); }
+
+async function askClaude(input) {
+  await wait(700 + Math.random() * 700); // feels like a real round-trip
+  const { kind, business, event, context } = input;
+
+  if (kind === "brief") {
+    const text = `Quiet-ish week overall at ${business.name}. The bigger thing worth your attention is Janet R.'s review — first complaint she's ever left, about a 40-minute wait, so it's likely a real scheduling gap rather than a one-off. Worth a look at Thursday/Friday afternoons specifically. Marcus T. no-showed a 3rd time but rebooked again within the week, so he's still engaged — might be worth a quick personal call instead of another text. Everything else moved through on its own: ${context.handledCount} of ${context.total} signals handled without you needing to step in, average first response around ${context.avgResponseMin} minutes.`;
+    return { ok: true, text };
+  }
+
+  if (kind === "call") {
+    const text = pick([
+      `Hi! So sorry we missed your call to ${business.name} — happy to help now. Want me to grab you an appointment time, or answer something quick here?`,
+      `Sorry we missed you calling ${business.name} a moment ago. We're around — let us know if you'd like to book a time or just have a question answered.`,
+    ]);
+    return { ok: true, text };
+  }
+
+  if (kind === "review") {
+    const text = pick([
+      `Thank you for the honest feedback, ${event.customer.split(" ")[0]} — a 40-minute wait isn't what we want for anyone, and we're looking at our scheduling to fix it. We'd love the chance to make it right; feel free to reach out directly whenever works for you.`,
+      `We appreciate you telling us this, ${event.customer.split(" ")[0]}. That wait time is on us, and we're already looking at what caused it. Please reach out directly — we'd like the chance to make your next visit better.`,
+    ]);
+    return { ok: true, text };
+  }
+
+  // noshow
+  const text = pick([
+    `Hi! Just confirming your appointment Thursday at 2pm — we'd really love to see you this time. Let us know if anything's come up so we can find a time that works better for you.`,
+    `Quick reminder about Thursday at 2pm — we've got your spot held. If something's making it hard to keep appointments lately, just let us know and we'll work around it.`,
+  ]);
+  return { ok: true, text };
+}
+
+const seedEvents = [
+  { id: 1, kind: "call", title: "Missed call", from: "(207) 555-0148", customer: "Unknown caller",
+    detail: "Caller hung up after 4 rings, 6:42pm — after hours.", history: null, status: "pending" },
+  { id: 2, kind: "review", title: "New review — 2 stars", from: "Janet R. on Google", customer: "Janet R.",
+    detail: "\"Waited 40 minutes past my appointment time. Staff was nice but the wait was rough.\"",
+    history: "First review from Janet. 2 past visits, no prior complaints.", status: "pending" },
+  { id: 3, kind: "noshow", title: "No-show flagged", from: "Marcus T.", customer: "Marcus T.",
+    detail: "3rd missed appointment in 4 months. Booked again for Thursday 2pm.",
+    history: "Missed Feb 3 and Apr 21 appointments too. Always rebooks within a week.", status: "pending" },
+];
+
+const Icon = {
+  call: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>,
+  review: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+  noshow: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>,
+  shield: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z"/></svg>,
+};
+const kindLabel = { call: "Call", review: "Review", noshow: "No-show" };
+
+function FrontDeskAgent() {
+  const [mode, setMode] = useState("chooser"); // chooser | signup | login | admin | admin-gate | client
+  const [adminPasscode, setAdminPasscode] = useState("");
+  const [adminError, setAdminError] = useState("");
+  const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [account, setAccount] = useState(null);
+  const [setupDone, setSetupDone] = useState(false);
+  const [business, setBusiness] = useState(seedBusiness);
+  const [form, setForm] = useState(seedBusiness);
+
+  const [events, setEvents] = useState(seedEvents);
+  const [drafts, setDrafts] = useState({});
+  const [flags, setFlags] = useState({});
+  const [loadingId, setLoadingId] = useState(null);
+  const [sentIds, setSentIds] = useState({});
+  const [autoSend, setAutoSend] = useState(false);
+  const [tab, setTab] = useState("feed");
+  const [summary, setSummary] = useState("");
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [callsUsed, setCallsUsed] = useState(0);
+
+  const handledCount = useMemo(() => events.filter(e => e.status === "handled").length, [events]);
+  const avgResponseMin = 6; // demo baseline — see note in brief for how this would be measured live
+
+  const badOutput = (text) => {
+    const t = text.toLowerCase();
+    return text.length < 15 || t.includes("i cannot") || t.includes("as an ai");
+  };
+
+  const handleEvent = async (event) => {
+    setLoadingId(event.id);
+    setCallsUsed((n) => n + 1);
+    const result = await askClaude({ kind: event.kind, business, event });
+    if (!result.ok || badOutput(result.text)) {
+      setFlags((f) => ({ ...f, [event.id]: true }));
+      setDrafts((d) => ({ ...d, [event.id]: result.ok ? result.text : "" }));
+    } else {
+      setDrafts((d) => ({ ...d, [event.id]: result.text }));
+      setEvents((evts) => evts.map((e) => (e.id === event.id ? { ...e, status: autoSend ? "handled" : "drafted" } : e)));
+      if (autoSend) setSentIds((s) => ({ ...s, [event.id]: true }));
+    }
+    setLoadingId(null);
+  };
+
+  const sendDraft = (id) => {
+    setSentIds((s) => ({ ...s, [id]: true }));
+    setEvents((evts) => evts.map((e) => (e.id === id ? { ...e, status: "handled" } : e)));
+  };
+
+  const runWeeklySummary = async () => {
+    setSummaryLoading(true);
+    setCallsUsed((n) => n + 1);
+    const result = await askClaude({
+      kind: "brief",
+      business,
+      context: { handledCount, total: events.length, avgResponseMin },
+    });
+    setSummary(result.ok ? result.text : "Couldn't generate the summary. Try again.");
+    setSummaryLoading(false);
+  };
+
+  if (mode === "chooser") {
+    return (
+      <div style={styles.page}>
+        <GlobalStyle />
+        <div style={styles.heroSection}>
+          <div style={styles.brandBlock}>
+            <Logo size={30} />
+            <div style={styles.wordmarkSmall}>{AGENT_NAME}</div>
+          </div>
+
+          <h1 style={styles.heroHeadline} className="fda-headline">The front desk<br />that never goes home.</h1>
+          <p style={styles.heroSub}>
+            {AGENT_NAME} catches every missed call, bad review, and no-show the moment it happens —
+            and drafts what to say back, before you even see it.
+          </p>
+
+          <div style={styles.heroCtaRow}>
+            <button style={styles.ctaPrimary} onClick={() => setMode("signup")}>Create your account →</button>
+            <button style={styles.ctaGhost} onClick={() => setMode("login")}>Log in</button>
+          </div>
+
+          <div style={styles.liveFeedMock} aria-hidden="true">
+            <div style={styles.liveFeedHead}>
+              <span style={styles.liveDot} className="fda-pulse-dot" /> live signal feed
+            </div>
+            {[
+              { t: "Missed call, 6:42pm", s: "texted back in 11 seconds" },
+              { t: "2★ review from Janet R.", s: "reply drafted, awaiting approval" },
+              { t: "3rd no-show — Marcus T.", s: "flagged and rebooked" },
+            ].map((row, i) => (
+              <div key={i} style={{ ...styles.liveFeedRow, animationDelay: `${0.15 + i * 0.12}s` }} className="fda-liverow">
+                <span style={styles.liveFeedRowT}>{row.t}</span>
+                <span style={styles.liveFeedRowS}>{row.s}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={styles.featureGrid} className="fda-features">
+            <div style={styles.featureCard}>
+              <div style={styles.featureLabel}>01 · Answers first</div>
+              <div style={styles.featureText}>Every missed call gets a reply within minutes, day or night.</div>
+            </div>
+            <div style={styles.featureCard}>
+              <div style={styles.featureLabel}>02 · Remembers</div>
+              <div style={styles.featureText}>Knows a customer's history — no-shows, complaints, repeat visits.</div>
+            </div>
+            <div style={styles.featureCard}>
+              <div style={styles.featureLabel}>03 · Reports back</div>
+              <div style={styles.featureText}>One short note each week on what actually needs you.</div>
+            </div>
+          </div>
+        </div>
+        <div style={styles.hiddenAdminLink}>
+          <button style={styles.tinyLink} onClick={() => setMode("admin-gate")}>·</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "signup" || mode === "login") {
+    const isSignup = mode === "signup";
+    return (
+      <div style={styles.page}>
+        <GlobalStyle />
+        <div style={styles.setupHero}>
+          <div style={styles.brandBlock}><Logo size={34} /><div style={styles.wordmark}>{AGENT_NAME}</div></div>
+          <div style={styles.heroLine}>{SLOGAN}</div>
+        </div>
+        <div style={styles.setupCard}>
+          <div style={styles.eyebrow}>{isSignup ? "CREATE ACCOUNT" : "LOG IN"}</div>
+          <h1 style={styles.h1}>{isSignup ? "Get started" : "Welcome back"}</h1>
+          <p style={styles.sub}>{isSignup ? "Takes about a minute. No credit card." : "Log in to your Deskhand account."}</p>
+          <p style={styles.brandFootnote}>{AGENT_NAME} · {SLOGAN}</p>
+          <label style={styles.label}>Your name</label>
+          <input style={styles.input} value={authForm.name} onChange={(e) => setAuthForm({ ...authForm, name: e.target.value })} placeholder="Jamie Rivera" />
+          <label style={styles.label}>Email</label>
+          <input style={styles.input} type="email" value={authForm.email} onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })} placeholder="you@business.com" />
+          <label style={styles.label}>Password</label>
+          <input style={styles.input} type="password" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} placeholder="••••••••" />
+          <button
+            style={styles.actionBtnWide}
+            onClick={() => {
+              const email = authForm.email.trim().toLowerCase();
+              if (email === OPERATOR_EMAIL) {
+                setAccount({ name: authForm.name || "Arish", email });
+                setMode("admin");
+              } else {
+                setAccount({ name: authForm.name || "Jamie", email: authForm.email });
+                setMode("client");
+              }
+            }}
+          >
+            {isSignup ? "Create account" : "Log in"}
+          </button>
+          <button style={styles.linkBtnCenter} onClick={() => setMode(isSignup ? "login" : "signup")}>
+            {isSignup ? "Already have an account? Log in" : "New here? Create an account"}
+          </button>
+          <button style={styles.linkBtnCenter} onClick={() => setMode("chooser")}>← Back</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "admin-gate") {
+    return (
+      <div style={styles.page}>
+        <GlobalStyle />
+        <div style={styles.setupHero}>
+          <div style={styles.brandBlock}><Logo size={34} /><div style={styles.wordmark}>{AGENT_NAME}</div></div>
+        </div>
+        <div style={styles.setupCard}>
+          <div style={styles.eyebrow}>RESTRICTED</div>
+          <h1 style={styles.h1}>Admin access</h1>
+          <p style={styles.sub}>Only the operator account can view this.</p>
+          <label style={styles.label}>Email</label>
+          <input
+            style={styles.input}
+            type="email"
+            value={adminPasscode}
+            onChange={(e) => { setAdminPasscode(e.target.value); setAdminError(""); }}
+            placeholder="you@email.com"
+          />
+          {adminError && <div style={styles.adminErrorText}>{adminError}</div>}
+          <button
+            style={styles.actionBtnWide}
+            onClick={() => {
+              if (adminPasscode.trim().toLowerCase() === OPERATOR_EMAIL) {
+                setAccount({ name: "Arish", email: OPERATOR_EMAIL });
+                setMode("admin");
+              } else {
+                setAdminError("That email doesn't have admin access.");
+              }
+            }}
+          >
+            Enter
+          </button>
+          <button style={styles.linkBtnCenter} onClick={() => setMode("chooser")}>← Back</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "admin") {
+    const totalSignals = seedClients.reduce((n, c) => n + c.signals, 0);
+    const totalHandled = seedClients.reduce((n, c) => n + c.handled, 0);
+    return (
+      <div style={styles.page}>
+        <GlobalStyle />
+        <header style={styles.header}>
+          <div>
+            <div style={styles.eyebrowRow}>
+              <Logo size={18} />
+              <span style={styles.miniWordmark}>{AGENT_NAME}</span>
+              <span style={styles.eyebrowDivider}>·</span>
+              <span style={styles.eyebrow}>ADMIN</span>
+            </div>
+            <h1 style={styles.h1}>Your clients</h1>
+            <div style={styles.sub}>{SLOGAN}</div>
+          </div>
+          <button style={styles.ghostBtn} onClick={() => { setMode("chooser"); }}>Exit admin</button>
+        </header>
+        <div style={styles.adminOnlyNote}>Visible only to you — clients never see this view.</div>
+
+        <div style={styles.adminStatsRow}>
+          <div style={styles.adminStat}><div style={styles.adminStatNum}>{seedClients.length}</div><div style={styles.adminStatLabel}>Active clients</div></div>
+          <div style={styles.adminStat}><div style={styles.adminStatNum}>{totalSignals}</div><div style={styles.adminStatLabel}>Signals this week</div></div>
+          <div style={styles.adminStat}><div style={styles.adminStatNum}>{totalHandled}</div><div style={styles.adminStatLabel}>Handled by the agent</div></div>
+        </div>
+
+        <div style={styles.feed}>
+          {seedClients.map((c) => (
+            <div key={c.id} style={styles.card} className="fda-card">
+              <div style={styles.cardTitleRow}>
+                <span style={styles.cardTitle}>{c.name}</span>
+                <span style={{ ...styles.statusTag, ...(c.plan === "Pro" ? styles.statusTagHandled : {}) }}>{c.plan}</span>
+              </div>
+              <div style={styles.cardFrom}>{c.type}</div>
+              <div style={styles.cardDetail}>{c.handled} of {c.signals} signals handled this week{c.weekly ? " · weekly brief on" : " · weekly brief off"}</div>
+            </div>
+          ))}
+        </div>
+        <footer style={styles.footer}>{AGENT_NAME} admin — demo data. In production this reads real usage from each client's account.</footer>
+      </div>
+    );
+  }
+
+  if (!setupDone) {
+    return (
+      <div style={styles.page}>
+        <GlobalStyle />
+        <div style={styles.setupHero}>
+          <div style={styles.brandBlock}><Logo size={34} /><div style={styles.wordmark}>{AGENT_NAME}</div></div>
+          <div style={styles.heroLine}>{SLOGAN}</div>
+        </div>
+        <div style={styles.setupCard}>
+          <div style={styles.eyebrow}>SET UP</div>
+          <h1 style={styles.h1}>Tell it about your business</h1>
+          <p style={styles.sub}>No code, no config files — just answer three things.</p>
+          <label style={styles.label}>Business name</label>
+          <input style={styles.input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <label style={styles.label}>What kind of business</label>
+          <input style={styles.input} value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} placeholder="e.g. hair salon, auto repair shop, law firm" />
+          <label style={styles.label}>How it should sound</label>
+          <input style={styles.input} value={form.voice} onChange={(e) => setForm({ ...form, voice: e.target.value })} placeholder="e.g. friendly and casual, formal and precise" />
+          <button style={styles.actionBtn} onClick={() => { setBusiness(form); setSetupDone(true); }}>
+            Start the agent
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.page}>
+      <GlobalStyle />
+      <header style={styles.header}>
+        <div>
+          <div style={styles.eyebrowRow}>
+            <Logo size={16} />
+            <span style={styles.miniWordmark}>{AGENT_NAME}</span>
+            <span style={styles.eyebrowDivider}>·</span>
+            <span style={styles.eyebrow}>ALWAYS-ON FRONT DESK</span>
+          </div>
+          <h1 style={styles.h1}>{business.name}</h1>
+          <div style={styles.sub}>Signed in as {account?.name || "you"} · every missed call, review, and no-show — caught the moment it happens.</div>
+        </div>
+        <div style={styles.headerRight}>
+          <button style={styles.ghostBtn} onClick={() => setSetupDone(false)}>Edit setup</button>
+          <div style={styles.statusPill}><span style={styles.dot} /> live</div>
+        </div>
+      </header>
+
+      <div style={styles.controlRow}>
+        <label style={styles.toggleRow}>
+          <input type="checkbox" checked={autoSend} onChange={(e) => setAutoSend(e.target.checked)} />
+          <span>{autoSend ? "Auto-send drafts" : "Approve each draft before sending"}</span>
+        </label>
+        <div style={styles.usageNote}>{callsUsed} agent calls this session · demo mode, responses simulated</div>
+      </div>
+
+      <nav style={styles.tabs}>
+        <button onClick={() => setTab("feed")} style={{ ...styles.tabBtn, ...(tab === "feed" ? styles.tabBtnActive : {}) }}>Signal feed</button>
+        <button onClick={() => setTab("brief")} style={{ ...styles.tabBtn, ...(tab === "brief" ? styles.tabBtnActive : {}) }}>Weekly brief</button>
+        <button onClick={() => setTab("trust")} style={{ ...styles.tabBtn, ...(tab === "trust" ? styles.tabBtnActive : {}) }}>Data & privacy</button>
+      </nav>
+
+      {tab === "feed" && (
+        <main style={styles.feed}>
+          {events.map((event) => {
+            const IconComp = Icon[event.kind];
+            const flagged = flags[event.id];
+            return (
+              <div key={event.id} style={styles.card} className="fda-card">
+                <div style={styles.cardTop}>
+                  <div style={styles.cardIcon}><IconComp /></div>
+                  <div style={{ flex: 1 }}>
+                    <div style={styles.cardTitleRow}>
+                      <span style={styles.cardTitle}>{event.title}</span>
+                      <span style={{ ...styles.statusTag, ...(event.status === "handled" ? styles.statusTagHandled : {}) }}>
+                        {event.status === "handled" ? "sent" : event.status === "drafted" ? "awaiting your OK" : "needs a draft"}
+                      </span>
+                    </div>
+                    <div style={styles.cardFrom}>{event.from}</div>
+                    <div style={styles.cardDetail}>{event.detail}</div>
+                    {event.history && <div style={styles.historyNote}>Agent remembers: {event.history}</div>}
+                  </div>
+                </div>
+
+                {flagged && (
+                  <div style={styles.warnBox}>
+                    This draft looked off (too short, or dodged the task) — held back instead of sending. A human should write this one.
+                  </div>
+                )}
+
+                {!flagged && drafts[event.id] && (
+                  <div style={styles.draftBox}>
+                    <div style={styles.draftLabel}>{sentIds[event.id] ? "Sent (simulated)" : "Drafted — ready to review"}</div>
+                    <div style={styles.draftText}>{drafts[event.id]}</div>
+                    {!sentIds[event.id] && !autoSend && (
+                      <button style={styles.sendBtn} onClick={() => sendDraft(event.id)}>
+                        {event.kind === "review" ? "Post reply" : "Send text"}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {!drafts[event.id] && (
+                  <button style={styles.actionBtn} disabled={loadingId === event.id} onClick={() => handleEvent(event)}>
+                    {loadingId === event.id ? "Drafting…" : "Draft response"}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </main>
+      )}
+
+      {tab === "brief" && (
+        <main style={styles.briefWrap}>
+          <p style={styles.briefIntro}>
+            Every week the agent reads everything that happened and leaves one short note — not a dashboard, a note.
+          </p>
+          <button style={styles.actionBtn} disabled={summaryLoading} onClick={runWeeklySummary}>
+            {summaryLoading ? "Reading the week…" : summary ? "Regenerate this week's brief" : "Generate this week's brief"}
+          </button>
+          {summary && (
+            <div style={styles.briefCard}>
+              <div style={styles.draftLabel}>Week of {new Date().toLocaleDateString(undefined, { month: "long", day: "numeric" })}</div>
+              <div style={styles.briefText}>{summary}</div>
+              <div style={styles.briefFootnote}>Response-time and volume stats shown here are session-tracked in this demo; in production they'd come from real call and calendar logs.</div>
+            </div>
+          )}
+        </main>
+      )}
+
+      {tab === "trust" && (
+        <main style={styles.trustWrap}>
+          <div style={styles.trustCard}>
+            <div style={styles.trustHead}><Icon.shield /> What's real vs. simulated in this demo</div>
+            <ul style={styles.trustList}>
+              <li><b>Real:</b> the AI drafting — every message above is generated live, not canned.</li>
+              <li><b>Simulated:</b> sending. "Send text" and "Post reply" here just mark the item done — a live version connects to the business's actual phone number and Google Business Profile.</li>
+              <li><b>Simulated:</b> calendar and no-show history — in production this reads from the real booking system.</li>
+            </ul>
+          </div>
+          <div style={styles.trustCard}>
+            <div style={styles.trustHead}><Icon.shield /> Data handling, going live</div>
+            <ul style={styles.trustList}>
+              <li>Customer names, numbers, and messages would be stored only for this business, not shared across other customers.</li>
+              <li>The business owner can turn off auto-send at any time and require approval on everything.</li>
+              <li>No message is generated about a customer's medical, legal, or financial details beyond what's needed to reply — the agent isn't shown full patient records.</li>
+            </ul>
+          </div>
+        </main>
+      )}
+
+      <footer style={styles.footer}>
+        {AGENT_NAME} — {SLOGAN} Demo: AI drafting is live and real. Sending, calendar sync, and review posting are simulated until connected to this business's real accounts.
+        <div style={{ marginTop: 10 }}>
+          <button style={styles.linkBtn} onClick={() => { setMode("chooser"); setSetupDone(false); setAccount(null); }}>Log out</button>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function GlobalStyle() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..600&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap');
+      * { box-sizing: border-box; }
+      button { font-family: inherit; cursor: pointer; }
+      input:focus, button:focus-visible { outline: 2px solid #B8935F; outline-offset: 2px; }
+      ::selection { background: #B8935F; color: #10141C; }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+      @media (max-width: 480px) {
+        .fda-header { flex-direction: column; gap: 12px; }
+        .fda-control-row { flex-direction: column; align-items: flex-start !important; gap: 10px; }
+      }
+      @media (max-width: 560px) {
+        .fda-features { grid-template-columns: 1fr !important; }
+        .fda-headline { font-size: 32px !important; }
+      }
+      @keyframes fda-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+      .fda-card { animation: fda-rise 0.4s ease both; }
+      .fda-card:nth-child(2) { animation-delay: 0.06s; }
+      .fda-card:nth-child(3) { animation-delay: 0.12s; }
+      .fda-liverow { animation: fda-rise 0.5s ease both; }
+      @keyframes fda-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+      .fda-pulse-dot { animation: fda-pulse 2s ease-in-out infinite; }
+    `}</style>
+  );
+}
+
+const styles = {
+  page: { minHeight: "100vh", background: "radial-gradient(circle at 20% 0%, #171D2B 0%, #10141C 55%)", color: "#EDE7D9", fontFamily: "'Inter', sans-serif", padding: "28px 18px 60px", maxWidth: 720, margin: "0 auto" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid #232838", paddingBottom: 26, marginBottom: 22, flexWrap: "wrap", gap: 12 },
+  headerRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 },
+  eyebrow: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: "0.14em", color: "#B8935F" },
+  h1: { fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 28, margin: 0, color: "#F6F2E8", letterSpacing: "-0.01em" },
+  sub: { marginTop: 8, fontSize: 13, color: "#8891A3", maxWidth: 420, lineHeight: 1.5 },
+  statusPill: { display: "flex", alignItems: "center", gap: 6, fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#7FBF8E", border: "1px solid #232838", borderRadius: 999, padding: "5px 11px", background: "#141924" },
+  dot: { width: 5, height: 5, borderRadius: "50%", background: "#7FBF8E", display: "inline-block", boxShadow: "0 0 0 3px rgba(127,191,142,0.14)" },
+  ghostBtn: { background: "transparent", border: "1px solid #232838", color: "#7C859A", borderRadius: 7, padding: "6px 11px", fontSize: 11.5 },
+  controlRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 10, padding: "12px 14px", background: "#141924", border: "1px solid #1F2531", borderRadius: 10 },
+  toggleRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "#AAB2C2" },
+  usageNote: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#565E70" },
+  tabs: { display: "flex", gap: 6, marginBottom: 22, flexWrap: "wrap" },
+  tabBtn: { background: "transparent", border: "1px solid #1F2531", color: "#7C859A", borderRadius: 7, padding: "7px 13px", fontSize: 12.5, fontWeight: 500 },
+  tabBtnActive: { background: "#1B2130", color: "#F6F2E8", borderColor: "#B8935F" },
+  feed: { display: "flex", flexDirection: "column", gap: 12 },
+  card: { background: "#141924", border: "1px solid #1F2531", borderRadius: 10, padding: 20 },
+  cardTop: { display: "flex", gap: 12 },
+  cardIcon: { width: 32, height: 32, borderRadius: 8, background: "#1F2534", color: "#B8935F", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  cardTitleRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  cardTitle: { fontWeight: 600, fontSize: 15, color: "#F6F2E8" },
+  statusTag: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 9.5, letterSpacing: "0.05em", color: "#B8935F", border: "1px solid #302818", background: "#1B160D", borderRadius: 999, padding: "3px 9px", whiteSpace: "nowrap" },
+  statusTagHandled: { color: "#7FBF8E", borderColor: "#1E2B21", background: "#131C16" },
+  cardFrom: { fontSize: 12, color: "#7C859A", marginTop: 2 },
+  cardDetail: { fontSize: 13.5, color: "#BFC5D3", marginTop: 6, lineHeight: 1.5 },
+  historyNote: { fontSize: 12, color: "#8CA0C9", marginTop: 8, fontStyle: "italic" },
+  actionBtn: { marginTop: 16, background: "#B8935F", color: "#10141C", border: "none", borderRadius: 7, padding: "9px 16px", fontSize: 12.5, fontWeight: 600, letterSpacing: "0.01em" },
+  sendBtn: { marginTop: 10, background: "transparent", border: "1px solid #2A3D30", color: "#7FBF8E", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600 },
+  draftBox: { marginTop: 14, background: "#12211A", border: "1px solid #22362A", borderRadius: 8, padding: 14 },
+  draftLabel: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: "0.05em", color: "#6FA97D", marginBottom: 8, textTransform: "uppercase" },
+  draftText: { fontSize: 14, color: "#DCE8DF", lineHeight: 1.55 },
+  warnBox: { marginTop: 14, background: "#241515", border: "1px solid #3A2222", borderRadius: 8, padding: 14, fontSize: 13, color: "#E3A6A6", lineHeight: 1.5 },
+  briefWrap: { display: "flex", flexDirection: "column", gap: 16 },
+  briefIntro: { fontSize: 14, color: "#8891A3", lineHeight: 1.6, maxWidth: 480 },
+  briefCard: { background: "#141924", border: "1px solid #1F2531", borderRadius: 12, padding: 20 },
+  briefText: { fontFamily: "'Fraunces', serif", fontSize: 18, lineHeight: 1.6, color: "#F6F2E8", marginTop: 4 },
+  briefFootnote: { fontSize: 11.5, color: "#5B6377", marginTop: 14, lineHeight: 1.5 },
+  trustWrap: { display: "flex", flexDirection: "column", gap: 14 },
+  trustCard: { background: "#141924", border: "1px solid #1F2531", borderRadius: 12, padding: 18 },
+  trustHead: { display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 14, color: "#B8935F", marginBottom: 10 },
+  trustList: { margin: 0, paddingLeft: 18, fontSize: 13, color: "#BFC5D3", lineHeight: 1.7 },
+  heroSection: { paddingTop: 30, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" },
+  wordmarkSmall: { fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 17, color: "#F6F2E8" },
+  heroHeadline: { fontFamily: "'Fraunces', serif", fontWeight: 500, fontSize: 42, lineHeight: 1.12, color: "#F6F2E8", margin: "30px 0 0", letterSpacing: "-0.015em" },
+  heroSub: { fontSize: 15, color: "#9AA3B5", maxWidth: 440, margin: "18px 0 0", lineHeight: 1.6 },
+  heroCtaRow: { display: "flex", gap: 12, marginTop: 30, flexWrap: "wrap", justifyContent: "center" },
+  ctaPrimary: { background: "#B8935F", color: "#10141C", border: "none", borderRadius: 8, padding: "12px 22px", fontSize: 13.5, fontWeight: 600 },
+  ctaGhost: { background: "transparent", color: "#EDE7D9", border: "1px solid #2A3040", borderRadius: 8, padding: "12px 22px", fontSize: 13.5, fontWeight: 500 },
+  liveFeedMock: { marginTop: 56, width: "100%", maxWidth: 460, background: "#141924", border: "1px solid #1F2531", borderRadius: 14, padding: "18px 20px", textAlign: "left", boxShadow: "0 30px 80px -30px rgba(0,0,0,0.6)" },
+  liveFeedHead: { display: "flex", alignItems: "center", gap: 7, fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, letterSpacing: "0.08em", color: "#7FBF8E", textTransform: "uppercase", marginBottom: 14 },
+  liveDot: { width: 6, height: 6, borderRadius: "50%", background: "#7FBF8E", display: "inline-block" },
+  liveFeedRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "10px 0", borderTop: "1px solid #1B202C", fontSize: 12.5 },
+  liveFeedRowT: { color: "#DDE1EA" },
+  liveFeedRowS: { color: "#5F7D67", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, textAlign: "right", flexShrink: 0 },
+  featureGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 48, width: "100%", maxWidth: 560 },
+  featureCard: { background: "#12161F", border: "1px solid #1B202C", borderRadius: 10, padding: "16px 14px", textAlign: "left" },
+  featureLabel: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, letterSpacing: "0.06em", color: "#B8935F", marginBottom: 8 },
+  featureText: { fontSize: 12.5, color: "#9AA3B5", lineHeight: 1.5 },
+  chooserWrap: { textAlign: "center", marginTop: 90, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 },
+  brandBlock: { display: "flex", alignItems: "center", gap: 10, justifyContent: "center" },
+  chooserCards: { display: "flex", gap: 14, marginTop: 36, flexWrap: "wrap", justifyContent: "center" },
+  chooserCard: { background: "#B8935F", border: "1px solid #B8935F", borderRadius: 12, padding: "22px 26px", width: 220, textAlign: "left", color: "#10141C" },
+  chooserCardAlt: { background: "#141924", border: "1px solid #1F2531", borderRadius: 12, padding: "22px 26px", width: 220, textAlign: "left", color: "#F6F2E8" },
+  chooserCardTitle: { fontFamily: "'Fraunces', serif", fontSize: 18, fontWeight: 500 },
+  chooserCardSub: { fontSize: 12.5, opacity: 0.85, marginTop: 8, lineHeight: 1.5 },
+  hiddenAdminLink: { position: "fixed", bottom: 10, right: 14, opacity: 0.35 },
+  tinyLink: { background: "transparent", border: "none", color: "#3A4152", fontSize: 18, padding: 6 },
+  adminOnlyNote: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#B8935F", marginBottom: 18, letterSpacing: "0.04em" },
+  adminErrorText: { fontSize: 12, color: "#E3A6A6", marginTop: 8 },
+  brandFootnote: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#3A4152", marginTop: -4 },
+  actionBtnWide: { marginTop: 20, width: "100%", background: "#B8935F", color: "#10141C", border: "none", borderRadius: 7, padding: "11px 16px", fontSize: 13, fontWeight: 600 },
+  linkBtnCenter: { display: "block", margin: "12px auto 0", background: "transparent", border: "none", color: "#8891A3", fontSize: 12, textDecoration: "underline" },
+  adminStatsRow: { display: "flex", gap: 12, marginBottom: 22, flexWrap: "wrap" },
+  adminStat: { flex: "1 1 140px", background: "#141924", border: "1px solid #1F2531", borderRadius: 10, padding: "16px 18px" },
+  adminStatNum: { fontFamily: "'Fraunces', serif", fontSize: 26, color: "#F6F2E8" },
+  adminStatLabel: { fontSize: 11.5, color: "#8891A3", marginTop: 4 },
+  linkBtn: { background: "transparent", border: "none", color: "#B8935F", fontSize: 11.5, padding: 0, textDecoration: "underline" },
+  setupHero: { textAlign: "center", marginTop: 50, marginBottom: 30 },
+  wordmark: { fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 34, color: "#F6F2E8", letterSpacing: "-0.01em" },
+  heroLine: { fontSize: 13.5, color: "#8CA0C9", marginTop: 8, fontStyle: "italic" },
+  eyebrowRow: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 },
+  miniWordmark: { fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 13, color: "#F6F2E8" },
+  eyebrowDivider: { color: "#3A4152" },
+  setupCard: { background: "#141924", border: "1px solid #1F2531", borderRadius: 12, padding: 26, boxShadow: "0 20px 60px -20px rgba(0,0,0,0.5)" },
+  label: { display: "block", fontSize: 12, color: "#8891A3", marginTop: 16, marginBottom: 6 },
+  input: { width: "100%", background: "#10141C", border: "1px solid #1F2531", borderRadius: 8, padding: "10px 12px", color: "#F6F2E8", fontSize: 14 },
+  footer: { marginTop: 40, fontSize: 11.5, color: "#5B6377", borderTop: "1px solid #1F2531", paddingTop: 16, lineHeight: 1.6 },
+};
+
+</script>
+<script>
+  var src = document.getElementById("component-source").textContent;
+  var compiled = Babel.transform(src, {
+    presets: [["react", { runtime: "classic" }]]
+  }).code;
+  (0, eval)(compiled);
+  ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(FrontDeskAgent));
+</script>
+</body>
+</html>
